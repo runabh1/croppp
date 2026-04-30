@@ -371,9 +371,9 @@ function displayResults(data) {
     displayCharts(data);
     // Advisory
     displayAdvisory(data.advisory);
-    // Auto-fill mandi with recommended crop
-    if (data.crop?.name) {
-        document.getElementById('mandiCommodity').value = data.crop.name;
+    // Auto-fill mandi with recommended crop (use pipeline crop name)
+    if (data.crop?.pipeline_crop_name) {
+        document.getElementById('mandiCommodity').value = data.crop.pipeline_crop_name;
         document.getElementById('disasterLocation').value = data.weather?.city || '';
     }
     // Store for context
@@ -383,7 +383,20 @@ function displayResults(data) {
 }
 
 function displayCards(data) {
-    document.getElementById('cropValue').textContent = data.crop.name;
+    // Use pipeline crop name (the crop actually used for yield/price/advisory)
+    // If different from model prediction, show both
+    const displayCrop = data.crop.pipeline_crop_name || data.crop.name;
+    const modelPrediction = data.crop.name !== data.crop.pipeline_crop_name ? data.crop.name : null;
+    
+    document.getElementById('cropValue').textContent = displayCrop;
+    
+    // Show pipeline note if crop was changed due to model limitations
+    if (data.crop.pipeline_note) {
+        const noteEl = document.getElementById('cropNote') || document.createElement('div');
+        noteEl.id = 'cropNote';
+        noteEl.innerHTML = `<small style="color:#f59e0b;display:block;margin-top:8px;padding:8px;background:rgba(245,158,11,.1);border-radius:4px;">${data.crop.pipeline_note}</small>`;
+        document.getElementById('cropConfidence').parentElement.appendChild(noteEl);
+    }
     
     const score = data.crop.display_confidence ?? data.crop.confidence;
     const rawConfidence = data.crop.confidence;
@@ -806,8 +819,10 @@ function displayCharts(data) {
 // ━━━ REPORT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function displayReport(data) {
     const score = data.crop.display_confidence ?? data.crop.confidence;
+    // Use pipeline crop name (the one used for predictions)
+    const reportCrop = data.crop.pipeline_crop_name || data.crop.name;
     const rows = [
-        ['🌾', 'Recommended Crop', data.crop.name],
+        ['🌾', 'Recommended Crop', reportCrop],
         ['📊', 'Recommendation Score', `${score}%`],
         ['🧮', 'Raw Model Probability', `${data.crop.confidence}%`],
         ['📈', 'Yield Prediction', `${data.yield.value} ${data.yield.unit}`],
@@ -837,7 +852,7 @@ function displayReport(data) {
     document.getElementById('downloadReport').onclick = async () => {
         try {
             const reportData = {
-                crop: data.crop.name,
+                crop: reportCrop,
                 confidence: data.crop.display_confidence ?? data.crop.confidence,
                 yield: data.yield.value,
                 price: data.price.value,
@@ -1538,7 +1553,8 @@ async function sendChatMessage() {
     // Build context from last prediction
     const context = {};
     if (lastPredictionData) {
-        context.crop = lastPredictionData.crop?.name;
+        // Use pipeline crop name (the crop actually used for predictions and advisory)
+        context.crop = lastPredictionData.crop?.pipeline_crop_name || lastPredictionData.crop?.name;
         context.temperature = lastPredictionData.inputs?.temperature;
         context.humidity = lastPredictionData.inputs?.humidity;
         context.rainfall = lastPredictionData.inputs?.rainfall;
@@ -1805,6 +1821,8 @@ function applyLanguage() {
 
 
 // ━━━ VOICE INPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let recordingTimer = null;
+
 function setupVoiceInput() {
     const voiceBtn = document.getElementById('voiceBtn');
     if (!voiceBtn) {
@@ -1814,14 +1832,14 @@ function setupVoiceInput() {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-        voiceBtn.setAttribute('title', t('voice_not_supported'));
+        voiceBtn.setAttribute('title', '❌ Voice input not supported');
         voiceBtn.style.opacity = '0.4';
         voiceBtn.style.cursor = 'not-allowed';
         voiceBtn.disabled = true;
         return;
     }
 
-    // Ensure button is enabled and has proper cursor
+    // Ensure button is enabled
     voiceBtn.style.opacity = '1';
     voiceBtn.style.cursor = 'pointer';
     voiceBtn.disabled = false;
@@ -1829,18 +1847,19 @@ function setupVoiceInput() {
     voiceBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        
         if (isRecording) {
-            stopVoice();
+            stopVoiceRecording();
         } else {
-            startVoice();
+            startVoiceRecording();
         }
     });
 }
 
-function startVoice() {
+function startVoiceRecording() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-        alert('Voice input not supported in your browser');
+        alert('❌ Speech recognition not supported in your browser');
         return;
     }
 
@@ -1848,78 +1867,148 @@ function startVoice() {
         speechRecognition = new SpeechRecognition();
         speechRecognition.continuous = false;
         speechRecognition.interimResults = true;
-        
-        // Try to use appropriate locale for speech recognition
-        // Most browsers don't support 'as-IN', so we'll use 'en-IN' for Assamese with fallback
         speechRecognition.lang = currentLang === 'as' ? 'en-IN' : 'en-IN';
 
         const voiceBtn = document.getElementById('voiceBtn');
         const voiceIcon = document.getElementById('voiceIcon');
         const chatInput = document.getElementById('chatInput');
 
-        if (voiceBtn) voiceBtn.classList.add('recording');
-        if (voiceIcon) voiceIcon.textContent = '⏹';
-        if (chatInput) chatInput.placeholder = t('speak_now');
         isRecording = true;
+        let recordingSeconds = 0;
+
+        // Visual feedback - recording started
+        if (voiceBtn) voiceBtn.classList.add('recording');
+        if (voiceIcon) voiceIcon.textContent = '⏹️';
+        if (chatInput) {
+            chatInput.placeholder = '🎤 Recording... Speak now!';
+            chatInput.value = '';
+            chatInput.style.opacity = '0.6';
+        }
+
+        console.log('🎤 Speech recognition started');
+
+        // Start timer to show recording duration
+        recordingTimer = setInterval(() => {
+            recordingSeconds++;
+            if (voiceBtn && isRecording) {
+                voiceBtn.textContent = `⏹️ ${recordingSeconds}s`;
+            }
+            if (chatInput && isRecording) {
+                chatInput.placeholder = `🎤 Recording... (${recordingSeconds}s) - Click mic to stop`;
+            }
+        }, 1000);
+
+        // Live transcript display
+        let interimTranscript = '';
+        let finalTranscript = '';
 
         speechRecognition.onstart = () => {
-            console.log('🎤 Speech recognition started');
+            console.log('🎤 Listening for speech...');
         };
 
         speechRecognition.onresult = (event) => {
-            let transcript = '';
+            interimTranscript = '';
             for (let i = event.resultIndex; i < event.results.length; i++) {
-                const isFinal = event.results[i].isFinal;
-                transcript += event.results[i][0].transcript;
-                if (isFinal) {
-                    console.log('📝 Recognized text:', transcript);
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                } else {
+                    interimTranscript += transcript;
                 }
             }
-            if (transcript && chatInput) chatInput.value = transcript;
+
+            // Show live text as user speaks
+            const fullText = finalTranscript + interimTranscript;
+            if (chatInput) {
+                chatInput.value = fullText;
+                console.log('📝 Interim:', fullText);
+            }
         };
 
         speechRecognition.onerror = (event) => {
-            console.error('❌ Speech recognition error:', event.error);
-            stopVoice();
-            
-            // Show user-friendly error message
-            let errorMsg = 'Microphone error. Please try again.';
-            if (event.error === 'network-error') errorMsg = 'Network error. Check your connection.';
-            if (event.error === 'no-speech') errorMsg = 'No speech detected. Please try again.';
-            if (event.error === 'audio-capture') errorMsg = 'Microphone not accessible. Check permissions.';
-            
-            if (chatInput) chatInput.placeholder = errorMsg;
+            console.error('❌ Speech Recognition Error:', event.error);
+            stopVoiceRecording();
+
+            let errorMsg = '❌ Error: ' + event.error;
+            if (event.error === 'network') errorMsg = '❌ Network error. Check internet.';
+            else if (event.error === 'no-speech') errorMsg = '❌ No speech detected. Try again.';
+            else if (event.error === 'audio-capture') errorMsg = '❌ Microphone not accessible.';
+
+            if (chatInput) {
+                chatInput.placeholder = errorMsg;
+                console.error(errorMsg);
+            }
         };
 
         speechRecognition.onend = () => {
             console.log('🎤 Speech recognition ended');
-            stopVoice();
-            // DO NOT auto-send - user must click send button
-            const chatInput = document.getElementById('chatInput');
-            if (chatInput) {
+            stopVoiceRecording();
+
+            // Display final transcript
+            if (chatInput && chatInput.value.trim()) {
+                chatInput.placeholder = '✏️ Edit if needed, then click Send button';
                 chatInput.focus();
-                chatInput.placeholder = t('chat_placeholder');
+                console.log('✅ Final Transcript:', chatInput.value);
+            } else if (chatInput) {
+                chatInput.placeholder = '❌ No speech was detected. Please try again.';
             }
         };
 
+        // START LISTENING
         speechRecognition.start();
+
     } catch (error) {
-        console.error('Failed to initialize speech recognition:', error);
-        stopVoice();
+        console.error('❌ Speech Recognition Setup Error:', error);
+        isRecording = false;
+        
+        const voiceBtn = document.getElementById('voiceBtn');
+        const voiceIcon = document.getElementById('voiceIcon');
+        const chatInput = document.getElementById('chatInput');
+
+        if (voiceBtn) voiceBtn.classList.remove('recording');
+        if (voiceIcon) voiceIcon.textContent = '🎤';
+        if (chatInput) chatInput.placeholder = '❌ Error initializing microphone: ' + error.message;
+
+        alert('❌ Microphone Error: ' + error.message);
     }
 }
 
-function stopVoice() {
-    if (speechRecognition) {
-        try { speechRecognition.stop(); } catch(e) {}
-    }
-    isRecording = false;
+function stopVoiceRecording() {
     const voiceBtn = document.getElementById('voiceBtn');
     const voiceIcon = document.getElementById('voiceIcon');
     const chatInput = document.getElementById('chatInput');
-    if (voiceBtn) voiceBtn.classList.remove('recording');
+
+    // Stop speech recognition
+    if (speechRecognition) {
+        try {
+            speechRecognition.stop();
+        } catch (e) {
+            console.warn('Could not stop speech recognition:', e);
+        }
+    }
+
+    isRecording = false;
+
+    // Clear timer
+    if (recordingTimer) {
+        clearInterval(recordingTimer);
+        recordingTimer = null;
+    }
+
+    // Reset visual feedback
+    if (voiceBtn) {
+        voiceBtn.classList.remove('recording');
+        voiceBtn.textContent = '🎤';
+    }
     if (voiceIcon) voiceIcon.textContent = '🎤';
-    if (chatInput) chatInput.placeholder = t('chat_placeholder');
+    if (chatInput) {
+        chatInput.style.opacity = '1';
+        if (!chatInput.value.trim()) {
+            chatInput.placeholder = '🎤 Click mic to try again...';
+        }
+    }
+
+    console.log('🎤 Recording stopped');
 }
 
 // ━━━ READ ALOUD (TTS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -46,7 +46,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURATION (All keys loaded from .env file)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__, static_folder="static", template_folder="templates")
-CORS(app)
+CORS(app, supports_credentials=True)
 app.secret_key = "smart_farming_secret_key_2024"  # For sessions
 
 PLANET_API_KEY = os.environ.get("PLANET_API_KEY", "")
@@ -56,7 +56,8 @@ WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")  # Support for custom model
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"]
+# Fallback chain: Try 2.5-flash first, then 3-flash-preview (newer), then others
+GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-3-5-flash-preview", "gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"]
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
 NEWS_API_URL = "https://api.thenewsapi.com/v1/news/top"
 NEWS_CACHE = {}  # Per-category cache: {"category_name": {"data": [], "timestamp": time}}
@@ -64,7 +65,7 @@ NEWS_CACHE_DURATION = 300  # 5 minutes
 
 
 
-def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=3):
+def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=4):
     """Call Gemini API with automatic retry and model fallback."""
     # Try primary model first, then fallbacks
     models_to_try = [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS
@@ -89,19 +90,24 @@ def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=3):
                     print(f"✅ Gemini API successful with model: {model}")
                     return resp
                 
+                # Handle rate limiting (429) with longer backoff
                 if resp.status_code == 429:
-                    if "quota" in resp.text.lower():
-                        print(f"⚠️ Gemini quota exceeded for {model}. Using fallback logic.")
-                        return resp
+                    if "quota" in resp.text.lower() or "quota" in resp.headers.get("x-goog-message", "").lower():
+                        print(f"⚠️ Gemini quota exceeded. Trying next model...")
+                        break  # Try next model
                     elif attempt < retries - 1:
-                        wait = 2 ** (attempt + 1)
-                        print(f"⏳ Gemini rate limited, retrying in {wait}s... (attempt {attempt+1}/{retries})")
+                        wait = min(5 * (2 ** attempt), 60)  # Longer backoff: 5, 10, 20, 40, 60s max
+                        print(f"⏳ Gemini rate limited ({model}), retrying in {wait}s... (attempt {attempt+1}/{retries})")
                         time.sleep(wait)
                         continue
+                    else:
+                        print(f"⚠️ Max retries exceeded for rate limit on {model}. Trying next model...")
+                        break
                 
-                if resp.status_code in (503, 500) and attempt < retries - 1:
+                # Handle server errors with retry
+                if resp.status_code in (503, 500, 502) and attempt < retries - 1:
                     wait = 2 ** (attempt + 1)
-                    print(f"⏳ Gemini returned {resp.status_code}, retrying in {wait}s... (attempt {attempt+1}/{retries})")
+                    print(f"⏳ Gemini server error {resp.status_code} on {model}, retrying in {wait}s... (attempt {attempt+1}/{retries})")
                     time.sleep(wait)
                     continue
                 
@@ -110,11 +116,9 @@ def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=3):
                     print(f"⚠️ Model {model} not available, trying next...")
                     break
                 
-                # Other errors
+                # Other errors - try next model
                 print(f"⚠️ Gemini API error with {model}: {resp.status_code}")
-                if attempt == retries - 1:
-                    break  # Try next model
-                continue
+                break
                 
             except Exception as e:
                 print(f"⚠️ Gemini request error with {model}: {e}")
@@ -124,7 +128,6 @@ def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=3):
                 time.sleep(wait)
     
     print(f"❌ All Gemini models failed. Falling back to rule-based logic.")
-    return None
     return None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1595,7 +1598,8 @@ def predict():
             "ndvi_timeline": ndvi_timeline,
             "alerts": alerts,
             "summary": {
-                "crop": crop_name.title(),
+                "crop": pipeline_crop_name.title(),
+                "model_prediction": crop_name.title() if crop_name.lower() != pipeline_crop_name.lower() else None,
                 "confidence": round(crop_result["confidence"] / 100.0, 4),
                 "recommendation_score": round(crop_result["display_confidence"] / 100.0, 4),
                 "yield_t_per_ha": yield_tons_per_ha,
@@ -2257,66 +2261,144 @@ Provide 5-8 immediate actions, 3-4 crop protection measures, 2-3 government sche
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CROP SUITABILITY CHATBOT (Gemini-powered)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def generate_fallback_chat_response(question):
+    """Generate a simple fallback response when Gemini is unavailable."""
+    question_lower = question.lower()
+    
+    # Common question patterns
+    if any(word in question_lower for word in ["fertilizer", "npk", "nitrogen", "phosphorus", "potassium"]):
+        return "For optimal fertilizer use, apply NPK in a 1:0.5:0.5 ratio. Urea (46% N) @ 50-100 kg/ha is common. Apply in splits: 50% at planting, 25% at growth, 25% at flowering. Cost-effective options include farmyard manure (5-10 tons/ha) combined with chemical fertilizers."
+    
+    if any(word in question_lower for word in ["water", "irrigation", "rainfall", "rain"]):
+        return "Irrigation timing is crucial. For most crops: light watering at germination, moderate at growth, increased at flowering/pod formation. Use drip irrigation for water efficiency. For rainfed areas, collect rainwater and improve soil moisture with organic mulch."
+    
+    if any(word in question_lower for word in ["disease", "pest", "insect", "fungal", "bacterial"]):
+        return "Common pest management: (1) Use certified seeds, (2) Rotate crops, (3) Apply neem oil for soft-bodied insects, (4) For fungal diseases use sulfur/copper fungicide, (5) Remove infected plants immediately. Consult local agricultural office for area-specific pests."
+    
+    if any(word in question_lower for word in ["crop", "yield", "harvest"]):
+        return "Yield depends on: variety (use certified seeds), soil health (test pH/NPK), proper irrigation, pest management, and timely harvesting. Recommended practices: use improved varieties, maintain 4:1 soil:seed ratio, apply recommended NPK, irrigate regularly, harvest at physiological maturity."
+    
+    if any(word in question_lower for word in ["soil", "ph", "test"]):
+        return "Get soil tested through local agricultural office. Ideal pH: 6-7 for most crops. Based on results: acidic soils need lime, alkaline soils need gypsum. Organic matter (compost/manure) improves all soils. Annual soil testing helps optimize fertilizer use and reduce costs."
+    
+    if any(word in question_lower for word in ["market", "price", "sell", "mandi"]):
+        return "Check local mandi rates before harvesting. Best practices: sell in bulk to reduce transport costs, dry crops properly to maintain quality, and time sales during peak demand. Connect with farmers' groups for better prices. Avoid post-harvest losses with proper storage."
+    
+    return "For farming questions, provide more details about your crop, soil, and current conditions. I can help with: crop selection, fertilizer schedules, irrigation, pest/disease management, market information, and cost-effective farming techniques."
+
+
 @app.route("/api/chat", methods=["POST"])
 def crop_chatbot():
-    """AI chatbot for crop suitability and farming questions."""
+    """AI chatbot for farming questions and advisory."""
     try:
         data = request.get_json()
-        mode = str(data.get("mode", "manual")).lower()
+        question = data.get("question", "").strip()
+        context = data.get("context", {})
+        language = data.get("language", "en").lower()
+        
+        if not question:
+            return jsonify({"success": False, "error": "No question provided"}), 400
+        
+        print(f"🧠 Chat Question: {question}")
+        print(f"🌍 Language: {language}")
+        
+        # Build context string for Gemini
+        context_str = ""
+        if context:
+            context_str = f"""
+FARMER'S CURRENT CONTEXT:
+- Current Crop: {context.get('crop', 'Not specified')}
+- Location: {context.get('location', 'Not specified')}
+- Temperature: {context.get('temperature', 'N/A')}°C
+- Humidity: {context.get('humidity', 'N/A')}%
+- Rainfall: {context.get('rainfall', 'N/A')} mm
+- Soil N: {context.get('N', 'N/A')} kg/ha
+- Soil P: {context.get('P', 'N/A')} kg/ha
+- Soil K: {context.get('K', 'N/A')} kg/ha
+- Soil pH: {context.get('ph', 'N/A')}
+- Field Health (NDVI): {context.get('ndvi', 'N/A')}"""
 
-        lat = data.get("latitude")
-        lon = data.get("longitude")
-        lat = None if lat in (None, "") else safe_float(lat, 0.0)
-        lon = None if lon in (None, "") else safe_float(lon, 0.0)
+        lang_instruction = ""
+        if language == 'as':
+            lang_instruction = "\n\nIMPORTANT: You MUST respond ENTIRELY in Assamese language (অসমীয়া ভাষা). Use proper Assamese script. Do NOT use any English or Bengali. All text must be in accurate Assamese."
 
-        weather_info = None
-        if mode == "auto" and lat is not None and lon is not None:
-            weather_info = fetch_weather(lat, lon)
-            if not weather_info:
-                return jsonify({"success": False, "error": "Could not fetch weather data"}), 500
+        prompt = f"""You are an expert agricultural advisor for marginal farmers in India. Answer the following question with practical, actionable advice.{lang_instruction}
 
-        core_inputs = normalize_core_inputs(data, weather_info)
-        crop_result = predict_crop_recommendation(core_inputs)
-        crop_name = crop_result["name"]
-        pipeline_crop_name, pipeline_note = select_pipeline_crop(crop_result)
-        crop_index = resolve_crop_index(pipeline_crop_name)
+{context_str}
 
-        yield_kg_per_ha, yield_tons_per_ha = predict_yield_tons(core_inputs, crop_index)
-        price_per_quintal, msp, market_inputs = predict_price_per_quintal(data, pipeline_crop_name, crop_index)
-        profit, price_per_ton = calculate_profit(yield_tons_per_ha, price_per_quintal)
+FARMER'S QUESTION: {question}
 
-        if lat is not None and lon is not None:
-            ndvi_data = fetch_planet_ndvi(lat, lon) or compute_ndvi_simulated(
-                core_inputs["Temperature"], core_inputs["Humidity"], core_inputs["Rainfall"], core_inputs["pH"]
-            )
-        else:
-            ndvi_data = compute_ndvi_simulated(
-                core_inputs["Temperature"], core_inputs["Humidity"], core_inputs["Rainfall"], core_inputs["pH"]
-            )
+Provide a helpful, concise response (2-3 paragraphs max). Focus on:
+1. Direct answer to the question
+2. Practical steps the farmer can take
+3. Cost-effective solutions suitable for marginal farmers
+4. Any warnings or precautions
 
+Keep language simple and understandable for small/marginal farmers."""
 
+        print(f"📤 Sending to Gemini (up to 4 retries with backoff)...")
+        resp = gemini_request(prompt, temperature=0.7, max_tokens=800, retries=4)
 
-        return jsonify({
-            "success": True,
-            "crop": crop_name,
-            "yield": {
-                "kg_per_ha": yield_kg_per_ha,
-                "tons_per_ha": yield_tons_per_ha
-            },
-            "price": {
-                "per_quintal": price_per_quintal,
-                "per_ton": price_per_ton,
-                "msp": msp,
-                "profit": profit
-            },
-            "ndvi": ndvi_data
-        })
+        if resp is None:
+            print("❌ Gemini API all models failed. Using fallback...")
+            fallback_answer = generate_fallback_chat_response(question)
+            return jsonify({
+                "success": True,
+                "answer": fallback_answer,
+                "confidence": "Medium",
+                "source": "Expert System (AI unavailable)",
+                "tips": []
+            }), 200
+
+        if resp.status_code != 200:
+            print(f"❌ Gemini API error: {resp.status_code}")
+            # Return fallback on any API error
+            fallback_answer = generate_fallback_chat_response(question)
+            return jsonify({
+                "success": True,
+                "answer": fallback_answer,
+                "confidence": "Medium",
+                "source": "Expert System (using offline database)",
+                "tips": ["Note: AI service momentarily unavailable"]
+            }), 200
+
+        try:
+            result = resp.json()
+            answer = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            
+            print(f"✅ Gemini Response: {answer[:100]}...")
+            
+            return jsonify({
+                "success": True,
+                "answer": answer,
+                "confidence": "High",
+                "source": "Gemini AI",
+                "tips": []
+            }), 200
+            
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            print(f"❌ Error parsing Gemini response: {e}")
+            # Fall back to rule-based response
+            fallback_answer = generate_fallback_chat_response(question)
+            return jsonify({
+                "success": True,
+                "answer": fallback_answer,
+                "confidence": "Medium",
+                "source": "Expert System",
+                "tips": []
+            }), 200
     
     except Exception as e:
-        print(f"Prediction Error: {str(e)}")
+        print(f"❌ Chat Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        fallback_answer = generate_fallback_chat_response("farming")
+        return jsonify({
+            "success": True,
+            "answer": fallback_answer,
+            "confidence": "Low",
+            "source": "Default Response"
+        }), 200
 
 
 @app.route("/api/news", methods=["POST", "GET"])
