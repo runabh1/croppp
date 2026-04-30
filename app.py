@@ -54,7 +54,9 @@ PLANET_API_URL = "https://api.planet.com/data/v1"
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")  # Support for custom model
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"]
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
 NEWS_API_URL = "https://api.thenewsapi.com/v1/news/top"
 NEWS_CACHE = {}  # Per-category cache: {"category_name": {"data": [], "timestamp": time}}
@@ -63,41 +65,66 @@ NEWS_CACHE_DURATION = 300  # 5 minutes
 
 
 def gemini_request(prompt, temperature=0.7, max_tokens=1500, retries=3):
-    """Call Gemini API with automatic retry on 503/429 errors."""
-    for attempt in range(retries):
-        try:
-            resp = http_requests.post(
-                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": temperature,
-                        "maxOutputTokens": max_tokens
-                    }
-                },
-                timeout=60
-            )
-            if resp.status_code == 200:
-                return resp
-            if resp.status_code == 429 and "quota" in resp.text.lower():
-                print("Gemini quota exceeded. Using rule-based advisory.")
-                return resp
-            if resp.status_code in (503, 429) and attempt < retries - 1:
-                wait = 2 ** (attempt + 1)
-                print(f"⏳ Gemini returned {resp.status_code}, retrying in {wait}s... (attempt {attempt+1}/{retries})")
-                time.sleep(wait)
+    """Call Gemini API with automatic retry and model fallback."""
+    # Try primary model first, then fallbacks
+    models_to_try = [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS
+    models_to_try = list(dict.fromkeys(models_to_try))  # Remove duplicates while preserving order
+    
+    for model in models_to_try:
+        for attempt in range(retries):
+            try:
+                url = f"{GEMINI_API_BASE}/{model}:generateContent?key={GEMINI_API_KEY}"
+                resp = http_requests.post(
+                    url,
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "temperature": temperature,
+                            "maxOutputTokens": max_tokens
+                        }
+                    },
+                    timeout=60
+                )
+                if resp.status_code == 200:
+                    print(f"✅ Gemini API successful with model: {model}")
+                    return resp
+                
+                if resp.status_code == 429:
+                    if "quota" in resp.text.lower():
+                        print(f"⚠️ Gemini quota exceeded for {model}. Using fallback logic.")
+                        return resp
+                    elif attempt < retries - 1:
+                        wait = 2 ** (attempt + 1)
+                        print(f"⏳ Gemini rate limited, retrying in {wait}s... (attempt {attempt+1}/{retries})")
+                        time.sleep(wait)
+                        continue
+                
+                if resp.status_code in (503, 500) and attempt < retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    print(f"⏳ Gemini returned {resp.status_code}, retrying in {wait}s... (attempt {attempt+1}/{retries})")
+                    time.sleep(wait)
+                    continue
+                
+                # If model not found, try next model
+                if resp.status_code == 404:
+                    print(f"⚠️ Model {model} not available, trying next...")
+                    break
+                
+                # Other errors
+                print(f"⚠️ Gemini API error with {model}: {resp.status_code}")
+                if attempt == retries - 1:
+                    break  # Try next model
                 continue
-            # Non-retryable error or last attempt
-            print(f"⚠️ Gemini API error: {resp.status_code} - {resp.text[:200]}")
-            return resp
-        except Exception as e:
-            if attempt < retries - 1:
+                
+            except Exception as e:
+                print(f"⚠️ Gemini request error with {model}: {e}")
+                if attempt == retries - 1:
+                    break  # Try next model
                 wait = 2 ** (attempt + 1)
-                print(f"⏳ Gemini request failed ({e}), retrying in {wait}s...")
                 time.sleep(wait)
-            else:
-                print(f"⚠️ Gemini request failed after {retries} attempts: {e}")
-                raise
+    
+    print(f"❌ All Gemini models failed. Falling back to rule-based logic.")
+    return None
     return None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
