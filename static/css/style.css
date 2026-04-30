@@ -322,6 +322,9 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .disaster-select option{background:#161d19;color:#dde4dd}
 .btn-disaster{padding:8px 18px;background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;border:none;border-radius:var(--radius-sm);font-size:.8rem;font-weight:600;font-family:var(--font-main);cursor:pointer;transition:all .3s;white-space:nowrap}
 .btn-disaster:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(239,68,68,.3)}
+.lang-btn{padding:6px 12px;background:transparent;color:var(--text-secondary);border:1px solid transparent;border-radius:4px;font-size:.75rem;font-weight:600;cursor:pointer;transition:all .2s}
+.lang-btn:hover{background:rgba(255,255,255,0.1);color:var(--text-primary)}
+.lang-btn.active{background:linear-gradient(135deg,#3b82f6,#1e40af);color:#fff;border-color:#1e40af;box-shadow:0 2px 8px rgba(59,130,246,.3)}
 .disaster-results{animation:fadeUp .4s ease}
 .disaster-header-banner{padding:14px;background:linear-gradient(135deg,rgba(239,68,68,.08),rgba(245,158,11,.04));border:1px solid rgba(239,68,68,.2);border-radius:var(--radius-md);margin-bottom:14px;display:flex;align-items:center;gap:10px}
 .disaster-header-banner .dh-icon{font-size:2rem}

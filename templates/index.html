@@ -637,7 +637,14 @@
                 <!-- Disaster Decision Engine -->
                 <section class="disaster-section glass-card rounded-xl p-md" id="disasterSection">
                     <div class="section-header">
-                        <h2 class="text-h2 font-h2">🌊 Disaster Decision Engine</h2><span class="disaster-badge">Gemini AI</span>
+                        <h2 class="text-h2 font-h2">🌊 Disaster Decision Engine</h2>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span class="disaster-badge">Gemini AI</span>
+                            <div class="lang-toggle" style="display:flex;gap:4px;background:rgba(255,255,255,0.1);padding:4px;border-radius:6px;">
+                                <button id="disasterLangEn" class="lang-btn active" data-lang="en" title="English">EN</button>
+                                <button id="disasterLangAs" class="lang-btn" data-lang="as" title="অসমীয়া">অ</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="disaster-controls">
                         <select id="disasterType" class="disaster-select">

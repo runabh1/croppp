@@ -2123,8 +2123,51 @@ def disaster_engine():
         crop = data.get("crop", "rice")
         location = data.get("location", "India")
         severity = data.get("severity", "moderate")
+        language = data.get("language", "en")  # Get language preference
 
-        prompt = f"""You are an emergency agricultural disaster response advisor for Indian farmers. A {severity} {disaster_type} is expected or occurring.
+        # Build language-specific prompt
+        if language == "as":
+            # Assamese prompt
+            prompt = f"""আপনি ভাৰতীয় কৃষকদের জন্য একজন জরুরি কৃষি দুর্যোগ প্রতিক্রিয়া উপদেষ্টা। এই সময়ে একটি {severity} {disaster_type} প্রত্যাশিত বা ঘটছে।
+
+বিবরণ:
+- দুর্যোগ: {disaster_type.upper()} ({severity} গুরুত্ব)
+- বর্তমান/পরিকল্পিত ফসল: {crop}
+- অবস্থান: {location}
+
+নিম্নলিখিত বিন্যাসে একটি ব্যাপক দুর্যোগ প্রতিক্রিয়া পরিকল্পনা অসমীয়ায় প্রদান করুন (শুধুমাত্র JSON ফেরত দিন):
+{{
+    "disaster_type": "{disaster_type}",
+    "severity": "{severity}",
+    "immediate_actions": [
+        {{
+            "icon": "<emoji>",
+            "priority": "immediate|within_24h|within_week",
+            "action": "<নির্দিষ্ট পদক্ষেপ>",
+            "detail": "<ব্যবহারিক বিবরণ>"
+        }}
+    ],
+    "crop_protection": {{
+        "can_save": true/false,
+        "measures": ["<ফসল সুরক্ষা ব্যবস্থা>"],
+        "alternative_crops": ["<বিকল্প ফসল>"],
+        "recovery_timeline": "<পুনরুদ্ধার সময়কাল>"
+    }},
+    "financial_advisory": {{
+        "insurance_claim": "<বীমা দাবি জমা দেওয়ার পদ্ধতি>",
+        "govt_schemes": ["<সরকারি ত্রাণ স্কিম>"],
+        "compensation": "<ক্ষতিপূরণ তথ্য>"
+    }},
+    "water_management": "<জল ব্যবস্থাপনা পরামর্শ>",
+    "post_disaster": ["<পুনরুদ্ধার পদক্ষেপ>"],
+    "warning_signs": ["<ক্ষতি মূল্যায়নের লক্ষণ>"],
+    "helpline": "<সহায়তা হটলাইন নম্বর>"
+}}
+
+৫-৮টি তাৎক্ষণিক পদক্ষেপ, ৩-৪টি ফসল সুরক্ষা ব্যবস্থা, ২-৩টি সরকারি স্কিম এবং ৩-৪টি পোস্ট-দুর্যোগ পদক্ষেপ প্রদান করুন। পরামর্শ ব্যবহারিক এবং ভারতীয় প্রান্তিক কৃষকদের জন্য নির্দিষ্ট রাখুন। নির্দিষ্ট পরিমাণ, সময় এবং পদ্ধতির নাম অন্তর্ভুক্ত করুন।"""
+        else:
+            # English prompt
+            prompt = f"""You are an emergency agricultural disaster response advisor for Indian farmers. A {severity} {disaster_type} is expected or occurring.
 
 CONTEXT:
 - Disaster: {disaster_type.upper()} ({severity} severity)
@@ -2160,8 +2203,7 @@ Provide a comprehensive disaster response plan in JSON format (return ONLY the J
     "helpline": "<relevant helpline numbers>"
 }}
 
-Provide 5-8 immediate actions, 3-4 crop protection measures, 2-3 government schemes, and 3-4 post-disaster steps. Keep advice practical, specific for Indian marginal farmers. Include specific quantities, timings, and method names.
-"""
+Provide 5-8 immediate actions, 3-4 crop protection measures, 2-3 government schemes, and 3-4 post-disaster steps. Keep advice practical, specific for Indian marginal farmers. Include specific quantities, timings, and method names."""
 
         resp = gemini_request(prompt, temperature=0.6, max_tokens=2000)
 
@@ -2175,6 +2217,7 @@ Provide 5-8 immediate actions, 3-4 crop protection measures, 2-3 government sche
 
         disaster_plan = json.loads(text)
         disaster_plan["source"] = "Gemini AI Disaster Engine"
+        disaster_plan["language"] = language
         return jsonify({"success": True, **disaster_plan})
 
     except json.JSONDecodeError:

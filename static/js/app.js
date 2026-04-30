@@ -1384,8 +1384,23 @@ function stopNewsAutoRefresh() {
 }
 
 // ━━━ DISASTER DECISION ENGINE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let disasterLang = 'en';
+
 function setupDisasterEngine() {
     document.getElementById('runDisasterBtn').addEventListener('click', runDisasterEngine);
+    
+    // Setup language buttons
+    document.getElementById('disasterLangEn').addEventListener('click', () => {
+        disasterLang = 'en';
+        document.getElementById('disasterLangEn').classList.add('active');
+        document.getElementById('disasterLangAs').classList.remove('active');
+    });
+    
+    document.getElementById('disasterLangAs').addEventListener('click', () => {
+        disasterLang = 'as';
+        document.getElementById('disasterLangAs').classList.add('active');
+        document.getElementById('disasterLangEn').classList.remove('active');
+    });
 }
 
 async function runDisasterEngine() {
@@ -1405,7 +1420,7 @@ async function runDisasterEngine() {
         const resp = await fetch('/api/disaster', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ disaster_type: disasterType, severity, location, crop, language: currentLang })
+            body: JSON.stringify({ disaster_type: disasterType, severity, location, crop, language: disasterLang })
         });
         const data = await resp.json();
 
