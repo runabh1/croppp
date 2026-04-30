@@ -1822,6 +1822,8 @@ function applyLanguage() {
 
 // ━━━ VOICE INPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 let recordingTimer = null;
+let voiceRetryCount = 0;
+let voiceRetryMax = 3;
 
 function setupVoiceInput() {
     const voiceBtn = document.getElementById('voiceBtn');
@@ -1867,7 +1869,7 @@ function startVoiceRecording() {
         speechRecognition = new SpeechRecognition();
         speechRecognition.continuous = false;
         speechRecognition.interimResults = true;
-        speechRecognition.lang = currentLang === 'as' ? 'en-IN' : 'en-IN';
+        speechRecognition.lang = currentLang === 'as' ? 'as-IN' : 'en-IN';
 
         const voiceBtn = document.getElementById('voiceBtn');
         const voiceIcon = document.getElementById('voiceIcon');
@@ -1927,13 +1929,47 @@ function startVoiceRecording() {
 
         speechRecognition.onerror = (event) => {
             console.error('❌ Speech Recognition Error:', event.error);
-            stopVoiceRecording();
+            const chatInput = document.getElementById('chatInput');
+            const voiceBtn = document.getElementById('voiceBtn');
 
             let errorMsg = '❌ Error: ' + event.error;
-            if (event.error === 'network') errorMsg = '❌ Network error. Check internet.';
-            else if (event.error === 'no-speech') errorMsg = '❌ No speech detected. Try again.';
-            else if (event.error === 'audio-capture') errorMsg = '❌ Microphone not accessible.';
+            
+            // Handle network errors with retry
+            if (event.error === 'network') {
+                voiceRetryCount++;
+                errorMsg = `❌ Network error (attempt ${voiceRetryCount}/${voiceRetryMax}). Retrying...`;
+                
+                if (voiceRetryCount < voiceRetryMax) {
+                    console.log(`🔄 Retrying speech recognition (${voiceRetryCount}/${voiceRetryMax})...`);
+                    if (chatInput) chatInput.placeholder = errorMsg;
+                    
+                    // Retry after 2 seconds
+                    setTimeout(() => {
+                        if (isRecording) {
+                            try {
+                                speechRecognition.start();
+                                console.log('🔄 Retry started');
+                            } catch (e) {
+                                console.warn('Could not restart speech recognition:', e);
+                                stopVoiceRecording();
+                            }
+                        }
+                    }, 2000);
+                    return;
+                } else {
+                    errorMsg = '❌ Network error after multiple attempts. Try:\n1. Check your internet connection\n2. Try using a different browser (Chrome/Edge work best)\n3. Check if Windows Speech Recognition is enabled (Settings > Privacy > Microphone)';
+                    voiceRetryCount = 0;
+                }
+            } else {
+                // Reset retry count for non-network errors
+                voiceRetryCount = 0;
+                
+                if (event.error === 'no-speech') errorMsg = '❌ No speech detected. Speak louder and try again. Make sure microphone is working.';
+                else if (event.error === 'audio-capture') errorMsg = '❌ Microphone not accessible. Check:\n1. Microphone is plugged in\n2. Browser has microphone permission\n3. No other app is using the microphone';
+                else if (event.error === 'not-allowed') errorMsg = '❌ Microphone permission denied. Click the lock icon in the address bar and allow microphone.';
+            }
 
+            stopVoiceRecording();
             if (chatInput) {
                 chatInput.placeholder = errorMsg;
                 console.error(errorMsg);
@@ -1988,6 +2024,7 @@ function stopVoiceRecording() {
     }
 
     isRecording = false;
+    voiceRetryCount = 0;  // Reset retry counter
 
     // Clear timer
     if (recordingTimer) {
